@@ -75,7 +75,8 @@ class Instance {
         this.started = false;
         this.turns = new Map(); // turnNo -> Map<slot, Buffer>
         this.hashes = new Map(); // turnNo -> Map<slot, hash>
-        this.currentTurn = 0;
+        this.currentTurn = 0; // highest turn number seen from any player (for GC)
+        this.relayTurn = 0; // next turn to relay (advanced only after a full turn is broadcast)
     }
 
     nextSlot() {
@@ -339,10 +340,13 @@ class GservClient {
             inst.turns.set(turnNo, turn);
         }
         if (!turn.has(slot)) turn.set(slot, payload);
-        if (turnNo >= inst.currentTurn) {
-            inst.currentTurn = turnNo;
-            this.tryRelayTurn(turnNo);
+        if (process.env.GSERV_DEBUG && turnNo % 20 === 0) {
+            console.log(`[gserv] game ${inst.id} turn ${turnNo}: ${this.name}(slot ${slot}) sent ${payload.length}b, have ${[...turn.keys()]}`);
         }
+        // Always try relaying from the oldest pending turn: players may send ahead
+        // (lockstep lead), so arrival order doesn't match turn order.
+        if (turnNo > inst.currentTurn) inst.currentTurn = turnNo;
+        this.tryRelayTurn(inst.relayTurn);
         // GC old turns
         for (const old of inst.turns.keys()) {
             if (old < inst.currentTurn - 10) inst.turns.delete(old);
@@ -375,8 +379,8 @@ class GservClient {
         }
         inst.broadcastBinary(Buffer.concat(parts));
         inst.turns.delete(turnNo);
-        inst.currentTurn = turnNo + 1;
-        this.tryRelayTurn(inst.currentTurn); // flush buffered future turns
+        inst.relayTurn = turnNo + 1;
+        this.tryRelayTurn(inst.relayTurn); // flush buffered future turns
     }
 
     onStateHash(turnNo, hash) {
