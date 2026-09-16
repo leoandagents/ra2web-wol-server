@@ -3,11 +3,13 @@ const http = require("node:http");
 const { WebSocketServer } = require("ws");
 const accounts = require("./accounts");
 const { GservServer } = require("./gserv");
+const { WolServer } = require("./wol");
 
 const PORT = Number(process.env.PORT) || 8901;
 const ALLOWED_ORIGINS = process.env.ALLOWED_ORIGINS?.split(",") ?? null; // null = allow all (self-hosted lobby)
 
 const gserv = new GservServer(accounts);
+const wol = new WolServer(accounts);
 
 const server = http.createServer((req, res) => {
     res.setHeader("access-control-allow-origin", "*");
@@ -43,11 +45,10 @@ const server = http.createServer((req, res) => {
 });
 
 const wssGserv = new WebSocketServer({ noServer: true });
-// WOL lobby comes in M3; refuse cleanly for now instead of hanging.
 const wssWol = new WebSocketServer({ noServer: true });
 
 wssGserv.on("connection", (ws) => gserv.handleConnection(ws));
-wssWol.on("connection", (ws) => ws.close(1008, "lobby not implemented yet"));
+wssWol.on("connection", (ws) => wol.handleConnection(ws));
 
 server.on("upgrade", (req, socket, head) => {
     if (ALLOWED_ORIGINS && req.headers.origin && !ALLOWED_ORIGINS.includes(req.headers.origin)) {
