@@ -1,0 +1,14 @@
+{
+  "name": "ra2web-wol-server",
+  "version": "0.1.0",
+  "private": true,
+  "type": "commonjs",
+  "description": "Self-hosted WOL lobby + gserv relay for the ra2web/ChronoDivide web RA2 client",
+  "main": "src/index.js",
+  "scripts": {
+    "start": "node src/index.js"
+  },
+  "dependencies": {
+    "ws": "^8.18.0"
+  }
+}
