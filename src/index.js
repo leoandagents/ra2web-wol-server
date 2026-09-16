@@ -12,9 +12,12 @@ const gserv = new GservServer(accounts);
 const wol = new WolServer(accounts);
 
 const server = http.createServer((req, res) => {
+    console.log(`[http] ${req.method} ${req.url} origin=${req.headers.origin ?? "-"}`);
     res.setHeader("access-control-allow-origin", "*");
     res.setHeader("access-control-allow-methods", "POST, GET, OPTIONS");
-    res.setHeader("access-control-allow-headers", "content-type");
+    // Reflect requested headers: Sentry's fetch instrumentation adds sentry-trace/baggage,
+    // which must be allowed or the preflight fails silently (no POST follows).
+    res.setHeader("access-control-allow-headers", req.headers["access-control-request-headers"] ?? "content-type");
     if (req.method === "OPTIONS") {
         res.writeHead(204);
         return res.end();

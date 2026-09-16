@@ -56,8 +56,14 @@ function unescapeChannelName(name) {
     return out;
 }
 
-// Description/modName fields in list topics: base64 of UTF-16LE bytes.
-const encodeDesc = (text) => Buffer.from(text, "utf16le").toString("base64");
+// Description/modName fields in topics: base64 of BIG-ENDIAN UTF-16 bytes (client's utf16ToBinaryString).
+const encodeDesc = (text) => {
+    const buf = Buffer.from(text, "utf16le");
+    for (let i = 0; i + 1 < buf.length; i += 2) {
+        [buf[i], buf[i + 1]] = [buf[i + 1], buf[i]];
+    }
+    return buf.toString("base64");
+};
 
 class Room {
     constructor(name, host, password, isPrivate, tournament) {
@@ -112,6 +118,7 @@ class WolClientHandler {
     }
 
     onLine(line) {
+        if (process.env.WOL_DEBUG) console.log(`[wol-in] ${this.name ?? "?"}: ${line}`);
         const parts = line.split(" ");
         const cmd = parts[0].toLowerCase();
         const args = parts.slice(1);
@@ -141,6 +148,8 @@ class WolClientHandler {
                     return this.onJoingame(args);
                 case "gameopt":
                     return this.onGameopt(args[0], trailing ?? "");
+                case "topic":
+                    return this.onTopic(args[0], trailing ?? "");
                 case "mode":
                     return this.room?.broadcast(`:${this.name}!${SERVER_NAME} MODE ${args.join(" ")}`, this.name);
                 case "startg":
@@ -209,9 +218,9 @@ class WolClientHandler {
         for (const room of this.server.rooms.values()) {
             if (room.isPrivate) continue;
             const chan = escapeChannelName(room.name);
+            // Prefer the host-published topic (real mod hash/map/desc); fall back to a stub.
             const maxPlayers = 8;
-            // topic: "10<maxPlayers>",modHash,aiPlayers,observers,observable,mapName,descB64,modNameB64
-            const topic = `10${maxPlayers},0,0,0,1,,${encodeDesc(room.name)},`;
+            const topic = room.topic ?? `10${maxPlayers},0,0,0,1,,${encodeDesc(room.name)},`;
             const hostPing = 50;
             this.sendText(
                 `:${SERVER_NAME} ${C.LIST_ENTRY} ${this.name} ${chan} ${room.members.size} 0 ${gameType ?? 0} ${
@@ -246,6 +255,15 @@ class WolClientHandler {
         }
         // Echo JOINGAME to every room member (client expects params[5]=ping, params[6]=fresh)
         this.room.broadcast(`:${this.name}!${SERVER_NAME} JOINGAME 0 0 0 0 0 50 1 :${escapeChannelName(channel)}`);
+        // The client waits for the channel NAMES list before rendering the room screen:
+        // without 353/366 the host sits on a blank "主机画面" forever.
+        const chan = escapeChannelName(channel);
+        const users = [...this.room.members.keys()].map((name) => {
+            const prefix = name === this.room.host ? "@" : "";
+            return `${prefix}${name},0,50,1`;
+        });
+        this.sendText(`:${SERVER_NAME} ${C.NAMREPLY} ${this.name} = ${chan} :${users.join(" ")}`);
+        this.sendText(`:${SERVER_NAME} ${C.END_OF_NAMES} ${this.name} ${chan} :End of /NAMES`);
         console.log(`[wol] ${this.name} joined room "${channel}" (${this.room.members.size} members)`);
     }
 
@@ -254,6 +272,13 @@ class WolClientHandler {
         const key = data[0] ?? "?";
         this.room.gameOpts.set(key, data);
         this.room.broadcast(`:${this.name}!${SERVER_NAME} GAMEOPT ${escapeChannelName(channel)} :${data}`, this.name);
+    }
+
+    // Host publishes the room topic (mod hash, map, description, player counts) via a
+    // dedicated "topic" command; we store it verbatim and serve it in LIST replies.
+    onTopic(channel, data) {
+        if (!this.room || this.room.host !== this.name) return;
+        this.room.topic = data;
     }
 
     onStartg(args) {
