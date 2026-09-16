@@ -100,7 +100,12 @@ class WolClientHandler {
     }
 
     sendText(text) {
-        if (this.ws.readyState === 1) this.ws.send(text + "\r\n");
+        if (this.ws.readyState === 1) {
+            if (process.env.WOL_DEBUG && text.includes("GAMEOPT")) {
+                console.log(`[wol-out] -> ${this.name ?? "?"}: ${text.slice(0, 120)}`);
+            }
+            this.ws.send(text + "\r\n");
+        }
     }
 
     reply(code, text) {
@@ -140,6 +145,8 @@ class WolClientHandler {
                     return; // user UserName HostName irc.westwood.com :RealName — ignored
                 case "join":
                     return this.onJoinChannel(unescapeChannelName(trailing ?? args[0] ?? ""));
+                case "names":
+                    return this.onNames(args[0]);
                 case "part":
                     return this.onPart(unescapeChannelName(trailing ?? args[0] ?? ""));
                 case "list":
@@ -206,6 +213,22 @@ class WolClientHandler {
         this.sendText(`:${SERVER_NAME} ${C.END_OF_NAMES} ${this.name} ${escapeChannelName(channel)} :End of /NAMES`);
     }
 
+    onNames(channelArg) {
+        const channel = unescapeChannelName(channelArg ?? "");
+        const room = this.server.rooms.get(channel);
+        const chan = escapeChannelName(channel);
+        let users;
+        if (room) {
+            users = [...room.members.keys()].map((name) => `${name === room.host ? "@" : ""}${name},0,50,1`);
+        } else if (channel === LOBBY_CHANNEL) {
+            users = [...this.server.clientsByName.keys()].map((name) => `${name},0,0,0`);
+        } else {
+            users = [`${this.name},0,0,0`];
+        }
+        this.sendText(`:${SERVER_NAME} ${C.NAMREPLY} ${this.name} = ${chan} :${users.join(" ")}`);
+        this.sendText(`:${SERVER_NAME} ${C.END_OF_NAMES} ${this.name} ${chan} :End of /NAMES`);
+    }
+
     onPart(channel) {
         if (this.room && this.room.name === channel) {
             this.leaveRoom();
@@ -264,6 +287,20 @@ class WolClientHandler {
         });
         this.sendText(`:${SERVER_NAME} ${C.NAMREPLY} ${this.name} = ${chan} :${users.join(" ")}`);
         this.sendText(`:${SERVER_NAME} ${C.END_OF_NAMES} ${this.name} ${chan} :End of /NAMES`);
+        // Replay the room's current gameopt state to the new member. Delayed: the joiner's
+        // client only sets gameChannelName AFTER the joingame reply + host-wait resolves,
+        // and silently drops gameopts that arrive before that (they'd lose the slot list
+        // forever, since L-lines are only sent on membership changes).
+        if (this.room.host !== this.name) {
+            const room = this.room;
+            const host = room.host;
+            setTimeout(() => {
+                if (this.room !== room || this.ws.readyState !== 1) return;
+                for (const data of room.gameOpts.values()) {
+                    this.sendText(`:${host}!${SERVER_NAME} GAMEOPT ${chan} :${data}`);
+                }
+            }, 1500);
+        }
         console.log(`[wol] ${this.name} joined room "${channel}" (${this.room.members.size} members)`);
     }
 
@@ -271,7 +308,10 @@ class WolClientHandler {
         if (!this.room) return;
         const key = data[0] ?? "?";
         this.room.gameOpts.set(key, data);
-        this.room.broadcast(`:${this.name}!${SERVER_NAME} GAMEOPT ${escapeChannelName(channel)} :${data}`, this.name);
+        // Echo to ALL members including the sender: clients update their own UI
+        // (e.g. the "接受"/ready button) only when their gameopt comes back.
+        // NOTE: `channel` arrives already wire-escaped — forward verbatim, never re-escape.
+        this.room.broadcast(`:${this.name}!${SERVER_NAME} GAMEOPT ${channel} :${data}`);
     }
 
     // Host publishes the room topic (mod hash, map, description, player counts) via a
