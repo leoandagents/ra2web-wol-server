@@ -160,6 +160,7 @@ class GservClient {
                 case "active":
                     return this.onActive(args[0] === "1");
                 case "taunt":
+                    this.server.recorder?.write(this.instance?.id, { t: "taunt", from: this.name, n: args[0] });
                     return this.instance?.broadcast(`:${this.name} ${RPL.TAUNT} ${this.name} :${args[0] ?? ""}`);
                 case "privmsg":
                     return this.onPrivmsg(args, trailing);
@@ -205,6 +206,14 @@ class GservClient {
         if (this.instance) this.leaveInstance();
         const inst = new Instance(gameId, opts, engineVer, modHash, priv === "1", this);
         this.server.instances.set(gameId, inst);
+        this.server.recorder?.start(gameId, {
+            opts,
+            engineVer,
+            modHash,
+            isPrivate: inst.isPrivate,
+            by: this.name,
+            expectedPlayers: inst.expectedNames,
+        });
         this.joinInstance(inst);
         this.reply(RPL.INSTANCE_CREATED, "created");
         console.log(`[gserv] ${this.name} created game ${gameId}`);
@@ -235,16 +244,19 @@ class GservClient {
         this.instance = inst;
         inst.clients.set(this.name, this);
         if (!keepSlot) inst.slotByName.set(this.name, inst.nextSlot());
+        this.server.recorder?.write(inst.id, { t: "join", player: this.name, slot: inst.slotByName.get(this.name) });
     }
 
     leaveInstance() {
         const inst = this.instance;
         if (!inst) return;
         inst.clients.delete(this.name);
+        this.server.recorder?.write(inst.id, { t: "leave", player: this.name, started: inst.started });
         // Do not free the slot: the relay and reconnect logic key on it.
         this.instance = null;
         if (inst.clients.size === 0) {
             this.server.instances.delete(inst.id);
+            this.server.recorder?.end(inst.id, inst.started ? "finished" : "abandoned");
             console.log(`[gserv] game ${inst.id} closed (empty)`);
         } else if (inst.started) {
             inst.broadcast(`:${SERVER_NAME} ${RPL.PLAYER_DISCONNECT} ${this.name} :${this.name}`);
@@ -261,6 +273,7 @@ class GservClient {
         if (!inst.started && allReady) {
             inst.started = true;
             inst.currentTurn = 0;
+            this.server.recorder?.write(inst.id, { t: "start", players: [...inst.clients.keys()] });
             for (const client of inst.clients.values()) {
                 client.sendText(`:${SERVER_NAME} ${RPL.GAME_START} ${client.name}`);
                 // Initial rate broadcast (turnNo 0 applies immediately on the client).
@@ -280,14 +293,16 @@ class GservClient {
     onActive(active) {
         if (!this.instance?.started) return;
         this.inactive = !active;
+        this.server.recorder?.write(this.instance.id, { t: "active", player: this.name, active });
         this.instance.broadcast(`:${SERVER_NAME} ${RPL.PLAYER_DISCONNECT} ${this.name} :${this.name}`);
-        if (active) this.tryRelayTurn(this.instance.currentTurn);
+        if (active) this.tryRelayTurn(this.instance.relayTurn);
     }
 
     onPrivmsg(args, trailing) {
         if (!this.instance || !trailing) return;
         const targets = (args[0] ?? "").split(",");
         const from = this.name;
+        this.server.recorder?.write(this.instance.id, { t: "chat", from, to: targets, text: trailing });
         for (const client of this.instance.clients.values()) {
             if (client.name === from) continue;
             if (targets.includes("#all") || targets.includes(client.name) || targets.includes("#team")) {
@@ -315,6 +330,7 @@ class GservClient {
                 if (inst.mapData) return this.reply(RPL.MAP_ALREADY_SENT, "map already sent");
                 if (buf.length > 4 * 1024 * 1024) return this.reply(RPL.MAP_TOO_BIG, "map too big");
                 inst.mapData = buf.subarray(2);
+                this.server.recorder?.write(inst.id, { t: "map", data: inst.mapData.toString("base64") });
                 console.log(`[gserv] map received for game ${inst.id} (${inst.mapData.length} bytes)`);
                 return;
             }
@@ -378,6 +394,12 @@ class GservClient {
             parts.push(meta, payload);
         }
         inst.broadcastBinary(Buffer.concat(parts));
+        // Record the completed turn: per-slot action payloads (base64) for offline analysis.
+        this.server.recorder?.write(inst.id, {
+            t: "turn",
+            n: turnNo,
+            p: Object.fromEntries(entries.map(([slot, payload]) => [slot, Buffer.from(payload).toString("base64")])),
+        });
         inst.turns.delete(turnNo);
         inst.relayTurn = turnNo + 1;
         this.tryRelayTurn(inst.relayTurn); // flush buffered future turns
@@ -397,6 +419,7 @@ class GservClient {
             const values = new Set(turn.values());
             if (values.size > 1) {
                 console.error(`[gserv] DESYNC in game ${inst.id} at turn ${turnNo}: ${JSON.stringify([...turn])}`);
+                this.server.recorder?.write(inst.id, { t: "desync", n: turnNo, hashes: Object.fromEntries(turn) });
                 inst.broadcast(`:${SERVER_NAME} ${RPL.GAME_DESYNC} ${this.name}`);
             }
             inst.hashes.delete(turnNo);
@@ -415,8 +438,9 @@ class GservClient {
 }
 
 class GservServer {
-    constructor(accounts) {
+    constructor(accounts, recorder) {
         this.accounts = accounts;
+        this.recorder = recorder; // RecorderManager
         this.clientsByName = new Map();
         this.instances = new Map();
     }

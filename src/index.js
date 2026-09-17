@@ -4,11 +4,13 @@ const { WebSocketServer } = require("ws");
 const accounts = require("./accounts");
 const { GservServer } = require("./gserv");
 const { WolServer } = require("./wol");
+const { RecorderManager } = require("./recorder");
 
 const PORT = Number(process.env.PORT) || 8901;
 const ALLOWED_ORIGINS = process.env.ALLOWED_ORIGINS?.split(",") ?? null; // null = allow all (self-hosted lobby)
 
-const gserv = new GservServer(accounts);
+const recorder = new RecorderManager();
+const gserv = new GservServer(accounts, recorder);
 const wol = new WolServer(accounts);
 
 const server = http.createServer((req, res) => {
