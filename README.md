@@ -30,6 +30,8 @@ npm install --omit=dev
 | `GSERV_NET_RATE` | `50` | 网络回合毫秒数（调速广播 802 的初值） |
 | `ALLOWED_ORIGINS` | 允许全部 | 逗号分隔的 Origin 白名单（可选） |
 | `WOL_DEBUG` / `GSERV_DEBUG` | 关 | 设为 `1` 开启协议日志 |
+| `GSERV_RECORD` | 关 | 设为 `1` 录制每一局到 `recordings/<gameId>.jsonl`（对局配置/地图/每回合每玩家操作/聊天/结果），用于 AI 分析与调优 |
+| `GSERV_RECORD_DIR` | `./recordings` | 录制文件目录 |
 
 ### systemd
 
